@@ -7,6 +7,7 @@ import net.minecraft.network.play.server.S12PacketEntityVelocity;
 import net.minecraft.network.play.server.S27PacketExplosion;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.network.FMLNetworkEvent;
+
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPipeline;
@@ -14,11 +15,19 @@ import io.netty.channel.ChannelPromise;
 
 public class JumpResetHandler {
 
-    private Minecraft mc = Minecraft.getMinecraft();
+    private final Minecraft mc = Minecraft.getMinecraft();
+
     private boolean injected = false;
 
-    // 0.1 = 90% de redução de knockback
-    private final double REDUCTION_FACTOR = 0.1;
+    /*
+     * 1.0 = 100% do knockback original
+     * 0.5 = 50% do knockback
+     * 0.1 = 10% do knockback
+     *
+     * ATENÇÃO:
+     * Isso é redução de knockback, não um jump reset puro.
+     */
+    private static final double REDUCTION_FACTOR = 0.1D;
 
     @SubscribeEvent
     public void onConnect(FMLNetworkEvent.ClientConnectedToServerEvent event) {
@@ -34,71 +43,147 @@ public class JumpResetHandler {
     }
 
     private void injectPipeline() {
-        if (mc.getNetHandler() == null || mc.getNetHandler().getNetworkManager() == null) return;
-        ChannelPipeline pipeline = mc.getNetHandler().getNetworkManager().channel().pipeline();
-        if (pipeline.get("jump_reset_handler") != null) return;
 
-        pipeline.addBefore("packet_handler", "jump_reset_handler", new ChannelDuplexHandler() {
+        if (mc.getNetHandler() == null) {
+            return;
+        }
 
-            @Override
-            public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-                if (!JumpResetMod.enabled) {
-                    super.channelRead(ctx, msg);
-                    return;
-                }
+        if (mc.getNetHandler().getNetworkManager() == null) {
+            return;
+        }
 
-                if (msg instanceof S12PacketEntityVelocity) {
-                    S12PacketEntityVelocity packet = (S12PacketEntityVelocity) msg;
+        ChannelPipeline pipeline =
+                mc.getNetHandler()
+                  .getNetworkManager()
+                  .channel()
+                  .pipeline();
 
-                    if (packet.getEntityID() == mc.thePlayer.getEntityId()) {
-                        sendJumpReset();
+        if (pipeline.get("jump_reset_handler") != null) {
+            return;
+        }
 
-                        packet.setMotionX((int)(packet.getMotionX() * REDUCTION_FACTOR));
-                        packet.setMotionY((int)(packet.getMotionY() * REDUCTION_FACTOR));
-                        packet.setMotionZ((int)(packet.getMotionZ() * REDUCTION_FACTOR));
+        pipeline.addBefore(
+                "packet_handler",
+                "jump_reset_handler",
+                new ChannelDuplexHandler() {
 
-                        super.channelRead(ctx, packet);
-                        return;
+                    @Override
+                    public void channelRead(
+                            ChannelHandlerContext ctx,
+                            Object msg) throws Exception {
+
+                        if (!JumpResetMod.enabled) {
+                            super.channelRead(ctx, msg);
+                            return;
+                        }
+
+                        /*
+                         * VELOCITY PACKET
+                         */
+                        if (msg instanceof S12PacketEntityVelocity) {
+
+                            S12PacketEntityVelocity packet =
+                                    (S12PacketEntityVelocity) msg;
+
+                            if (mc.thePlayer != null &&
+                                packet.getEntityID() == mc.thePlayer.getEntityId()) {
+
+                                /*
+                                 * Primeiro deixa o Minecraft aplicar
+                                 * o velocity normalmente.
+                                 */
+                                super.channelRead(ctx, msg);
+
+                                /*
+                                 * Depois reduz o knockback aplicado.
+                                 */
+                                reducePlayerVelocity();
+
+                                /*
+                                 * Tenta executar o jump reset.
+                                 */
+                                sendJumpReset();
+
+                                return;
+                            }
+                        }
+
+                        /*
+                         * EXPLOSION PACKET
+                         */
+                        if (msg instanceof S27PacketExplosion) {
+
+                            super.channelRead(ctx, msg);
+
+                            if (mc.thePlayer != null) {
+
+                                /*
+                                 * O S27PacketExplosion não precisa
+                                 * ser alterado diretamente.
+                                 *
+                                 * Depois que o Minecraft aplica
+                                 * a explosão, reduzimos o movimento
+                                 * resultante do jogador.
+                                 */
+                                reducePlayerVelocity();
+
+                                sendJumpReset();
+                            }
+
+                            return;
+                        }
+
+                        super.channelRead(ctx, msg);
+                    }
+
+                    @Override
+                    public void write(
+                            ChannelHandlerContext ctx,
+                            Object msg,
+                            ChannelPromise promise) throws Exception {
+
+                        super.write(ctx, msg, promise);
                     }
                 }
-
-                if (msg instanceof S27PacketExplosion) {
-                    sendJumpReset();
-                    S27PacketExplosion explosion = (S27PacketExplosion) msg;
-                    explosion.setMotionX(explosion.getMotionX() * (float)REDUCTION_FACTOR);
-                    explosion.setMotionY(explosion.getMotionY() * (float)REDUCTION_FACTOR);
-                    explosion.setMotionZ(explosion.getMotionZ() * (float)REDUCTION_FACTOR);
-                    super.channelRead(ctx, explosion);
-                    return;
-                }
-
-                super.channelRead(ctx, msg);
-            }
-
-            @Override
-            public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-                super.write(ctx, msg, promise);
-            }
-        });
+        );
     }
 
+    /**
+     * Reduz o velocity atualmente aplicado ao jogador.
+     */
+    private void reducePlayerVelocity() {
+
+        if (mc.thePlayer == null) {
+            return;
+        }
+
+        mc.thePlayer.motionX *= REDUCTION_FACTOR;
+        mc.thePlayer.motionY *= REDUCTION_FACTOR;
+        mc.thePlayer.motionZ *= REDUCTION_FACTOR;
+    }
+
+    /**
+     * Executa o jump reset.
+     *
+     * C0BPacketEntityAction.Action.JUMP NÃO EXISTE
+     * no Minecraft 1.8.9.
+     *
+     * O Action.JUMP do código antigo estava errado.
+     */
     private void sendJumpReset() {
-        if (mc.thePlayer == null) return;
-        if (mc.getNetHandler() == null || mc.getNetHandler().getNetworkManager() == null) return;
+
+        if (mc.thePlayer == null) {
+            return;
+        }
 
         EntityPlayer player = mc.thePlayer;
 
-        mc.getNetHandler().getNetworkManager().sendPacket(
-            new C0BPacketEntityAction(player, C0BPacketEntityAction.Action.STOP_SPRINTING)
-        );
-        mc.getNetHandler().getNetworkManager().sendPacket(
-            new C0BPacketEntityAction(player, C0BPacketEntityAction.Action.START_SNEAKING)
-        );
-        mc.getNetHandler().getNetworkManager().sendPacket(
-            new C0BPacketEntityAction(player, C0BPacketEntityAction.Action.JUMP)
-        );
-        mc.getNetHandler().getNetworkManager().sendPacket(
-            new C0BPacketEntityAction(player, C0BPacketEntityAction.Action.STOP_SNEAKING)
-        );
+        /*
+         * Um pulo normal deve ser executado pelo próprio
+         * player.jump(), e não através de C0B.Action.JUMP.
+         */
+        if (player.onGround) {
+            player.jump();
+        }
     }
 }
