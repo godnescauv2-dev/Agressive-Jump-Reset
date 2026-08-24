@@ -18,20 +18,30 @@ jobs:
           java-version: '8'
           distribution: 'temurin'
 
-      - name: Setup Gradle
-        uses: gradle/gradle-build-action@v2
+      - name: Download Forge MDK 1.8.9
+        run: |
+          curl -o mdk.zip -L \
+            "https://maven.minecraftforge.net/net/minecraftforge/forge/1.8.9-11.15.1.2318-1.8.9/forge-1.8.9-11.15.1.2318-1.8.9-mdk.zip"
+          unzip -o mdk.zip -d mdk-temp
+          # Copia o gradle wrapper do MDK pro repositório
+          cp mdk-temp/gradlew .
+          cp mdk-temp/gradlew.bat .
+          mkdir -p gradle/wrapper
+          cp mdk-temp/gradle/wrapper/gradle-wrapper.jar gradle/wrapper/
+          cp mdk-temp/gradle/wrapper/gradle-wrapper.properties gradle/wrapper/
+          chmod +x gradlew
+          rm -rf mdk.zip mdk-temp
 
       - name: Setup Forge workspace
         run: |
-          chmod +x gradlew
-          ./gradlew setupDecompWorkspace --no-daemon
+          ./gradlew setupDecompWorkspace --no-daemon --refresh-dependencies
 
       - name: Build mod
         run: |
           ./gradlew build --no-daemon
 
       - name: Upload mod JAR
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: JumpReset-Mod
           path: build/libs/*.jar
