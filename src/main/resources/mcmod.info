@@ -1,0 +1,14 @@
+[{
+  "modid": "jumpreset",
+  "name": "JumpReset",
+  "description": "JumpReset Anti-KB Mod",
+  "version": "1.0",
+  "mcversion": "1.8.9",
+  "url": "",
+  "updateUrl": "",
+  "authorList": ["connectedCHEAT"],
+  "credits": "",
+  "logoFile": "",
+  "screenshots": [],
+  "dependencies": []
+}]
